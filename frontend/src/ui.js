@@ -34,8 +34,10 @@ export const eventNames = {
   REQUEST_FILED: '登记申请', SCHEDULE_REVISED: '调整引航计划', TUG_RESERVED: '预约拖轮', BERTH_CONFIRMED: '确认靠泊',
   INSUFFICIENT_TIDE: '潮窗核验不通过', TUG_CONFLICT: '拖轮冲突', BERTH_CONFLICT: '泊位作业冲突', TUG_REQUIRED: '缺拖轮预约',
   INCIDENT_QUEUED: '登记现场延误', INCIDENT_REQUEUED: '重试模型', MODEL_FAILED: '模型计算失败', MODEL_CLASSIFIED: '模型分类',
-  MARGIN_REVIEWED: '主管签署分类', MARGIN_REVIEW_REQUIRED: '间隔带未复核', ACTION_ISSUED: '发布调度指令', REVIEW_CLOSED: '完成复盘',
-  PRIORITY_ACTION_REQUIRED: '处置级别不符', ALL_FAST_TIME: '复盘时间不符',
+  BATCH_RELEASED: '批次放行', MARGIN_REVIEWED: '主管签署分类', MARGIN_REVIEW_REQUIRED: '间隔带未复核',
+  ACTION_ISSUED: '发布调度指令', REVIEW_CLOSED: '完成复盘', PRIORITY_ACTION_REQUIRED: '处置级别不符',
+  ALL_FAST_TIME: '复盘时间不符', AUTO_RELEASE_SUSPENDED: '暂停自动放行', AUTO_CASE_SIGNED_OFF: '带外案主管签放',
+  AUTO_RELEASE_RESUMED: '解除暂停并重新计数',
 };
 
 export function journal(events) {

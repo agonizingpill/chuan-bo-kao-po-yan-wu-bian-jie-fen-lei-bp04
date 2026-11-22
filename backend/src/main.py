@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from scripts.seed_demo import seed
 
+from . import schema_patch
 from .operations_evidence import router as operations_evidence
 from .database import Session, engine, queue, setting
 from .models import Base
@@ -23,6 +24,10 @@ log = logging.getLogger('uvicorn.error')
 @asynccontextmanager
 async def lifespan(app):
     Base.metadata.create_all(engine)
+    try:
+        schema_patch.apply()
+    except Exception:
+        log.exception('Schema patch failed')
     if setting('SEED_DEMO', 'true').lower() == 'true':
         try:
             log.info('Demo seed %s', seed())

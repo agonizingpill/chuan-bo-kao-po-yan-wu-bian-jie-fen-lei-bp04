@@ -4,11 +4,12 @@ from redis.exceptions import RedisError
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session as DatabaseSession
 
+from . import batching
 from .classifier import snapshot_digest
 from .database import WAKE_QUEUE, queue
 from .models import Action, BerthRequest, DelayClass, DelayIncident, DispatchReview, IncidentState, RequestState
 from .planning import Rejected, audit, find, require_window, tide_clearance, utc_now
-from .schemas import CloseInput, DispatchInput, IncidentInput, MarginDecision
+from .schemas import CloseInput, DispatchInput, IncidentInput, MarginDecision, SignOffInput
 
 log = logging.getLogger(__name__)
 
@@ -40,11 +41,17 @@ def report(db: DatabaseSession, actor: str, data: IncidentInput):
         'eta_offset_min': round(offset, 3), 'tide_reserve_min': round(reserve, 3),
         'wind_kn': data.wind_kn, 'tug_wait_min': data.tug_wait_min,
     }
-    incident = DelayIncident(code=data.code, request_code=request.code, radio_reference=data.radio_reference,
-                             observed_at=data.observed_at, event_note=data.event_note, features=features,
-                             input_digest=snapshot_digest(features), state=IncidentState.QUEUED)
+    # 同一泊位按登记顺序编号、十案一批；序号在泊位行锁内领取，并发登记不重号。
+    cycle_no, seq_no, batch_no = batching.register_order(db, request.berth_code)
+    incident = DelayIncident(
+        code=data.code, request_code=request.code, berth_code=request.berth_code,
+        cycle_no=cycle_no, seq_no=seq_no, batch_no=batch_no,
+        radio_reference=data.radio_reference, observed_at=data.observed_at,
+        event_note=data.event_note, features=features,
+        input_digest=snapshot_digest(features), state=IncidentState.QUEUED)
     db.add(incident)
-    audit(db, actor, incident.code, 'INCIDENT_QUEUED', f'{request.code} · {incident.radio_reference}')
+    audit(db, actor, incident.code, 'INCIDENT_QUEUED',
+          f'{request.code} · {incident.radio_reference} · 第 {cycle_no} 轮第 {batch_no} 批序号 {seq_no}')
     return incident
 
 
@@ -54,7 +61,9 @@ def retry(db: DatabaseSession, actor: str, code: str):
         raise Rejected('RETRY_STATE', '只有计算失败的案件可以重试', code)
     incident.state = IncidentState.QUEUED
     incident.error = None
-    audit(db, actor, code, 'INCIDENT_REQUEUED', f'复用输入摘要 {incident.input_digest}')
+    # 重试沿用登记时的 cycle/seq/batch，序号不重新发放，因此不重复计案。
+    audit(db, actor, code, 'INCIDENT_REQUEUED',
+          f'复用输入摘要 {incident.input_digest} · 第 {incident.cycle_no} 轮第 {incident.batch_no} 批序号 {incident.seq_no}')
     return incident
 
 
@@ -68,15 +77,25 @@ def review_margin(db: DatabaseSession, actor: str, code: str, data: MarginDecisi
     incident.decided_at = utc_now()
     incident.state = IncidentState.READY
     audit(db, actor, code, 'MARGIN_REVIEWED', f'{data.decision} · {data.reason}')
+    # 本批可能因此算齐，顺带放行仍在等待的后批。
+    batching.promote_held(db, incident.berth_code)
     return incident
+
+
+def sign_off_auto(db: DatabaseSession, actor: str, code: str, data: SignOffInput):
+    return batching.sign_off_auto(db, actor, code, data.note)
 
 
 def dispatch(db: DatabaseSession, actor: str, code: str, data: DispatchInput):
     incident = find(db, DelayIncident, code, lock=True)
+    if incident.state == IncidentState.BATCH_HELD:
+        raise Rejected('BATCH_HELD', '前批尚未算齐，该案仍在批次等待中，暂不能发令', code)
     if incident.state == IncidentState.MARGIN_REVIEW:
         raise Rejected('MARGIN_REVIEW_REQUIRED', '间隔带案件必须由主管签署人工分类', code)
     if incident.state != IncidentState.READY or not incident.decision:
         raise Rejected('DISPATCH_STATE', '处置仅适用于已完成分类且尚未发布动作的案件', code)
+    # 暂停期间未发令的带外案也须主管签完才发令；已发令的不受影响（走到这里说明尚未发令）。
+    batching.require_dispatch_allowed(db, incident)
     if incident.decision == DelayClass.PRIORITY and data.action == Action.MONITOR:
         raise Rejected('PRIORITY_ACTION_REQUIRED', '优先处置须发布待命或改期指令', code)
     record = DispatchReview(incident_code=code, issued_by=actor, issued_at=utc_now(), **data.model_dump())
@@ -101,4 +120,6 @@ def close(db: DatabaseSession, actor: str, code: str, data: CloseInput):
     incident.state = IncidentState.CLOSED
     request.state = RequestState.COMPLETED
     audit(db, actor, code, 'REVIEW_CLOSED', f'{data.all_fast_at:%m-%d %H:%M} · {data.outcome}')
+    # 结案不改变批次算齐口径（进入 ACTIONED 时已算齐），但兜底推动等待案放行。
+    batching.promote_held(db, incident.berth_code)
     return record

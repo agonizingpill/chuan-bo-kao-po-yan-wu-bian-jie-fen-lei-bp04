@@ -65,6 +65,15 @@ class MarginDecision(Payload):
     reason: Note
 
 
+class SignOffInput(Payload):
+    note: Note
+
+
+class SuspensionLift(Payload):
+    berth_code: Code
+    note: Note
+
+
 class DispatchInput(Payload):
     action: Action
     instruction: Note

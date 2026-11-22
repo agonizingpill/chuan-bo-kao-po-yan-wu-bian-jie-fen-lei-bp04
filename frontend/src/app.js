@@ -7,7 +7,7 @@ import {blank, esc, field} from './ui.js';
 const root = document.querySelector('#root');
 const notice = document.querySelector('#notice');
 const sections = {schedule: ['靠泊申请', schedule], resources: ['潮汐与拖轮', resources], incidents: ['延误边界', incidents], reviews: ['调度复盘', reviews]};
-const feedback = {register: '申请已登记', publish: '潮窗已发布', revise: '改期已保存', assign: '拖轮已预约', confirm: '靠泊已确认', report: '现场事件已入队', verify: '人工分类已签署', dispatch: '值班指令已发布', close: '复盘已结案', retry: '计算已重新入队'};
+const feedback = {register: '申请已登记', publish: '潮窗已发布', revise: '改期已保存', assign: '拖轮已预约', confirm: '靠泊已确认', report: '现场事件已入队', verify: '人工分类已签署', signoff: '带外案已由主管签放', lift: '泊位暂停已解除，新一轮重新计数', dispatch: '值班指令已发布', close: '复盘已结案', retry: '计算已重新入队'};
 let noticeTimer;
 let revision = 0;
 
@@ -78,7 +78,7 @@ root.addEventListener('submit', async event => {
       setSession(await api.signIn(payload));
       history.replaceState(null, '', '#schedule');
     } else {
-      await (['register', 'publish', 'report'].includes(action) ? api[action](payload) : api[action](code, payload));
+      await (['register', 'publish', 'report', 'lift'].includes(action) ? api[action](payload) : api[action](code, payload));
       const target = {register: 'schedule', publish: 'resources', report: 'incidents'}[action];
       if (target) history.replaceState(null, '', `#${target}/${encodeURIComponent(payload.code)}`);
       toast(feedback[action]);
@@ -117,7 +117,7 @@ window.addEventListener('hashchange', refresh);
 setInterval(() => {
   const [section, code] = route();
   const incident = store.data?.incidents.find(item => item.code === code);
-  if (section === 'incidents' && incident?.state === 'queued' && !store.busy) refresh();
+  if (section === 'incidents' && ['queued', 'batch_held'].includes(incident?.state) && !store.busy) refresh();
 }, 1500);
 render();
 refresh();

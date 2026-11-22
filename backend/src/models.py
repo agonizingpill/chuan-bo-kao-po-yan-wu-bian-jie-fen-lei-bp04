@@ -1,6 +1,6 @@
 from enum import StrEnum
 
-from sqlalchemy import CheckConstraint, DateTime, Enum, Float, ForeignKey, Index, Integer, JSON, String, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum, Float, ForeignKey, Index, Integer, JSON, String, UniqueConstraint, text
 from sqlalchemy.orm import DeclarativeBase, mapped_column
 
 
@@ -20,6 +20,7 @@ class RequestState(StrEnum):
 class IncidentState(StrEnum):
     QUEUED = 'queued'
     FAILED = 'failed'
+    BATCH_HELD = 'batch_held'
     MARGIN_REVIEW = 'margin_review'
     READY = 'ready'
     ACTIONED = 'actioned'
@@ -41,6 +42,11 @@ def enum(kind):
     return Enum(kind, values_callable=lambda members: [member.value for member in members])
 
 
+# 同一泊位按登记顺序十案一批；一批至少六案进入间隔带即暂停该泊位自动放行。
+BATCH_SIZE = 10
+SUSPEND_MARGIN_CASES = 6
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -56,6 +62,9 @@ class Berth(Base):
     __tablename__ = 'berths'
     code = mapped_column(String(12), primary_key=True)
     label = mapped_column(String(60), nullable=False)
+    # 暂停解除后从新登记的案重新计数：轮次加一，序号从 1 重新开始。
+    cycle_no = mapped_column(Integer, nullable=False, default=1, server_default=text('1'))
+    next_seq = mapped_column(Integer, nullable=False, default=1, server_default=text('1'))
 
 
 class TideWindow(Base):
@@ -108,12 +117,27 @@ class TugAssignment(Base):
 
 class DelayIncident(Base):
     __tablename__ = 'delay_incidents'
+    __table_args__ = (
+        UniqueConstraint('berth_code', 'cycle_no', 'seq_no', name='incident_berth_sequence_uq'),
+        Index('incident_berth_batch_idx', 'berth_code', 'cycle_no', 'batch_no', 'seq_no'),
+        Index('incident_state_idx', 'state'),
+    )
     code = mapped_column(String(32), primary_key=True)
     request_code = mapped_column(ForeignKey('berth_requests.code'), nullable=False, unique=True)
+    berth_code = mapped_column(ForeignKey('berths.code'), nullable=False)
+    # 登记顺序在同一泊位、同一轮次内单调递增；重试复用原序号，不重复计案。
+    cycle_no = mapped_column(Integer, nullable=False)
+    seq_no = mapped_column(Integer, nullable=False)
+    batch_no = mapped_column(Integer, nullable=False)
     radio_reference = mapped_column(String(64), nullable=False, unique=True)
     observed_at = mapped_column(DateTime, nullable=False)
     event_note = mapped_column(String(300), nullable=False)
     state = mapped_column(enum(IncidentState), nullable=False, default=IncidentState.QUEUED, index=True)
+    in_margin_band = mapped_column(Boolean, nullable=False, default=False, server_default=text('0'))
+    # 暂停期间带外（非间隔带）案须主管签放后才能发布指令。
+    auto_released_by = mapped_column(ForeignKey('users.username'))
+    auto_released_at = mapped_column(DateTime)
+    auto_release_note = mapped_column(String(300))
     features = mapped_column(JSON, nullable=False)
     input_digest = mapped_column(String(64), nullable=False)
     result = mapped_column(JSON)
@@ -123,6 +147,27 @@ class DelayIncident(Base):
     decided_by = mapped_column(ForeignKey('users.username'))
     decision_reason = mapped_column(String(300))
     decided_at = mapped_column(DateTime)
+
+
+class BerthSuspension(Base):
+    __tablename__ = 'berth_suspensions'
+    __table_args__ = (
+        Index('berth_suspension_open_idx', 'berth_code', 'lifted_at'),
+    )
+    id = mapped_column(Integer, primary_key=True)
+    berth_code = mapped_column(ForeignKey('berths.code'), nullable=False)
+    cycle_no = mapped_column(Integer, nullable=False)
+    batch_no = mapped_column(Integer, nullable=False)
+    # 触发暂停的那一案（该批次第六件间隔带案），案件页面据此反查触发批次。
+    trigger_incident_code = mapped_column(ForeignKey('delay_incidents.code'), nullable=False)
+    margin_cases = mapped_column(Integer, nullable=False)
+    reason = mapped_column(String(300), nullable=False)
+    suspended_by = mapped_column(ForeignKey('users.username'), nullable=False)
+    suspended_at = mapped_column(DateTime, nullable=False)
+    lifted_by = mapped_column(ForeignKey('users.username'))
+    lifted_at = mapped_column(DateTime)
+    lift_note = mapped_column(String(300))
+    next_cycle_no = mapped_column(Integer)
 
 
 class DispatchReview(Base):

@@ -3,10 +3,10 @@ from datetime import timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 
-from . import incidents, planning
+from . import batching, incidents, planning
 from .database import Session
-from .models import Audit, Berth, BerthRequest, DelayIncident, DispatchReview, Role, TideWindow, Tug, TugAssignment, User
-from .schemas import AssignTug, CloseInput, DispatchInput, IncidentInput, Login, MarginDecision, RequestInput, Schedule, TideInput
+from .models import Audit, Berth, BerthRequest, BerthSuspension, DelayIncident, DispatchReview, Role, TideWindow, Tug, TugAssignment, User
+from .schemas import AssignTug, CloseInput, DispatchInput, IncidentInput, Login, MarginDecision, RequestInput, Schedule, SignOffInput, SuspensionLift, TideInput
 from .security import current_user, permitted, token_for, valid_password
 
 router = APIRouter()
@@ -47,6 +47,8 @@ def watch(user: User = read):
             'assignments': [row(item) for item in db.scalars(select(TugAssignment).order_by(TugAssignment.starts_at))],
             'incidents': [row(item) for item in db.scalars(select(DelayIncident).order_by(DelayIncident.observed_at.desc()))],
             'reviews': [row(item) for item in db.scalars(select(DispatchReview).order_by(DispatchReview.issued_at.desc()))],
+            'suspensions': [row(item) for item in db.scalars(
+                select(BerthSuspension).order_by(BerthSuspension.id.desc()))],
         }
 
 
@@ -113,6 +115,18 @@ def retry_incident(code: str, user: User = supervise):
 def review_incident(code: str, data: MarginDecision, user: User = supervise):
     with Session.begin() as db:
         return row(incidents.review_margin(db, user.username, code, data))
+
+
+@router.post('/delay-incidents/{code}/sign-off')
+def sign_off_incident(code: str, data: SignOffInput, user: User = supervise):
+    with Session.begin() as db:
+        return row(incidents.sign_off_auto(db, user.username, code, data))
+
+
+@router.post('/berth-suspensions/lift')
+def lift_suspension(data: SuspensionLift, user: User = supervise):
+    with Session.begin() as db:
+        return row(batching.lift_suspension(db, user.username, data.berth_code, data.note))
 
 
 @router.post('/delay-incidents/{code}/dispatch', status_code=201)
